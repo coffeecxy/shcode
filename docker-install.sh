@@ -151,6 +151,13 @@ do_install() {
 	
 	# 大部分的发行版都会提供lsb_release这个命令.如果没有提供这个命令,其也可以通过其他方式得到.
 	
+	# .(source)是内建命令. 从后面给出的文件中读取并执行其中的命令. 返回的状态是
+	# 最后一个命令返回的状态. 如果后面跟的文件名不是以/开头的,也就是不是给出的
+	# 绝对路径. 那么会在PATH中指定的路径中搜索这个文件. 如果后面跟了任意的参数,当这个
+	# 文件是可以执行的时候,就是这个可执行文件的参数.
+	# 这个命令可以看出是和C中的include类似的. 
+	# 其不会开启一个新的shell来运行,而是在这个shell中运行. 和在shell中执行一个命令是不同的.
+	
 	# 如果lsb_release没有确定出是哪个发行版
 	# /etc/lsb-release中全部都是A=B这种类型的环境变量的设置,这里source它,然后将里面的
 	if [ -z "$lsb_dist" ] && [ -r /etc/lsb-release ]; then
@@ -163,7 +170,7 @@ do_install() {
 		lsb_dist='fedora'
 	fi
 	if [ -z "$lsb_dist" ] && [ -r /etc/os-release ]; then
-		lsb_dist="$(. /etc/os-release && echo "$ID")"
+		lsb_dist=$(. /etc/os-release && echo "$ID")
 	fi
 
 	# 将lsb中的所有大写字母变成小写字母
@@ -210,28 +217,43 @@ do_install() {
 
 		ubuntu|debian|linuxmint|'elementary os'|kali)
 		
-		# export是sh的build in命令. 被export的名字会出现在后面的所有运行命令的
+		# export是sh的build in命令. 被export的名字会出现在后面的所有运行命令的环境变量中.
+		# 在shell中,运行一个命令之前,可以使用A=B C=D cmd的方式来运行,这样这个命令运行的时候就有A,C两个环境变量了.
+		# 有很多环境变量需要在每个命令运行的时候都设置,如果都手动设置的话,那么就会太麻烦了. export就可以方便的处理这个事情.
 		
 		# A=B的形式只是在这个sh运行的子进程中设置的环境变量,完成之后,就没有了.
 		# export关键字将这个环境变量在这个子进程运行完成之后父进程对应的shell中还有
 			export DEBIAN_FRONTEND=noninteractive
 
-			# 确保apt-get update只会运行一次.
+		# ()会开启一个子shell,然后在其中运行使用;分开的各个命令. 一般的,其返回值我们是不会使用的. 比如这儿的apt-get update 命令.
 			did_apt_get_update=
 			apt_get_update() {
 				if [ -z "$did_apt_get_update" ]; then
-				# ()会开启一个子shell,然后在其中运行使用;分开的各个命令
+				
 					( set -x; $sh_c 'sleep 3; apt-get update' )
 					did_apt_get_update=1
 				fi
 			}
+			
+			# grep匹配到了会返回0(成功),没有匹配到会返回失败(1)
+			
+			#modprobe用来进行内核模块的安装. -r参数会从内存中卸载指定的模块. 如果没有-r参数,那么会向内核中插入这个模块.
+			
+			# !和&&和C中的意思是一样的,!的优先级比&&高,所有下面的意思是系统中没有有aufs这个模块文件,同时这个模块不可以被插入到内核中.
 
+			# grep后面的选项--其实不是一个真正的选项,其用来标示选项已经给完了. 后面给出的是参数了.
+			
+			# dpkg命令是deb package manager的意思,也就是用来管理系统上的deb包的底层命令. dpkg很底层,包的依赖关系都没有处理.
+			# 所以我们一般不会用其来进行包的安装. 但是用来查看包的信息还是很方便的.
+			# dpkg -l可以列出包的信息. 没一行的前面两个字符是ii的话,表示这个包已经被安装了.
+			
 			# aufs is preferred over devicemapper; try to ensure the driver is available.
 			if ! grep -q aufs /proc/filesystems && ! $sh_c 'modprobe aufs'; then
 				if uname -r | grep -q -- '-generic' && dpkg -l 'linux-image-*-generic' | grep -q '^ii' 2>/dev/null; then
 					kern_extras="linux-image-extra-$(uname -r) linux-image-extra-virtual"
 
 					apt_get_update
+					
 					# apt-get中的-q是quiet的意思.-y是在要回答y/n的时候,直接回到y,脚本就不会停下来等着输入.
 					# 所以这两个参数在平时安装软件的时候不会用到,但是在脚本中都会用到.
 					( set -x; $sh_c 'sleep 3; apt-get install -y -q '"$kern_extras" ) || true
@@ -253,6 +275,7 @@ do_install() {
 			# otherwise Docker will fail to start
 			# 2>/dev/null可以保证在文件不存在的情况下,cat返回no such file or directory到stderr中,此时stdout是空的.
 			if [ "$(cat /sys/module/apparmor/parameters/enabled 2>/dev/null)" = 'Y' ]; then
+			# command -v返回成功,表示apparmor_parser是存在的.
 				if command -v apparmor_parser &> /dev/null; then
 					echo 'apparmor is enabled in the kernel and apparmor utils were already installed'
 				else
@@ -262,16 +285,23 @@ do_install() {
 				fi
 			fi
 
+			# []是测试命令,测试命令的返回要么是0,要么是1. 其为test的命令的一个简单的写法.
+			#可以被测试的包括字符串,整数(对它们进行比较操作,和通用编程语言中的一样). 还有文件(就是文件的各种属性)
+			# -e表示测试*文件*是否存在.
 			if [ ! -e /usr/lib/apt/methods/https ]; then
 				apt_get_update
 				( set -x; $sh_c 'sleep 3; apt-get install -y -q apt-transport-https ca-certificates' )
 			fi
+			
+			# -z测试字符串是不是为空.
 			if [ -z "$curl" ]; then
 				apt_get_update
 				( set -x; $sh_c 'sleep 3; apt-get install -y -q curl ca-certificates' )
 				curl='curl -sSL'
 			fi
+			
 			(
+			# [str1 = str2] =是用来测试字符串是否相等的.
 				set -x
 				if [ "https://get.docker.com/" = "$url" ]; then
 					$sh_c "apt-key adv --keyserver hkp://p80.pool.sks-keyservers.net:80 --recv-keys 36A1D7869245C8950F966E92D8576A8BA88D21E9"
@@ -285,6 +315,7 @@ do_install() {
 				$sh_c "echo deb ${url}ubuntu docker main > /etc/apt/sources.list.d/docker.list"
 				$sh_c 'sleep 3; apt-get update; apt-get install -y -q lxc-docker'
 			)
+			
 			if command_exists docker && [ -e /var/run/docker.sock ]; then
 				(
 					set -x
